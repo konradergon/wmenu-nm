@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# wmenu-nm — an nm-applet replacement driven by wmenu + nmcli.
+#
+# Requires: bash >= 4.2, NetworkManager (nmcli), wmenu
+# Optional: libnotify (notify-send), nm-connection-editor
+#
+# Bind it to a key, e.g. in sway:  bindsym $mod+n exec wmenu-net
+
+set -uo pipefail
+
+WMENU=${WMENU:-wmenu}
+WMENU_ARGS=(-i -l 15)        # -i case-insensitive, -l visible lines
+WMENU_PASS_ARGS=(-i -P)      # -P password mode (hides input)
+EDITOR_CMD=(nm-connection-editor)
+PROMPT=${PROMPT:-network}
+
+# MENU:     ordered list of labels shown to the user
+# ACTION:   label -> "verb<TAB>arg"
+# WIFI_SEC: ssid  -> security string ("" means open network)
+declare -a MENU=()
+declare -A ACTION=()
+declare -A WIFI_SEC=()
+
+add_entry() { # label verb [arg]
+	local label=$1
+	[[ -n ${ACTION[$label]:-} ]] && return 0   # keep labels unique
+	MENU+=("$label")
+	ACTION[$label]=$2$'\t'${3-}
+}
+
+# nmcli -t escapes ':' and '\' in values; undo that.
+unescape() {
+	local s=${1//\\:/:}
+	printf '%s' "${s//\\\\/\\}"
+}
+
+notify() {
+	if command -v notify-send >/dev/null; then
+		notify-send -a wmenu-net "wmenu-net" "$1"
+	else
+		printf '%s\n' "$1" >&2
+	fi
+}
+
+run() { # run a command, report result
+	local out
+	if out=$("$@" 2>&1); then
+		notify "${out:-ok}"
+	else
+		notify "failed: $out"
+		return 1
+	fi
+}
+
+wifi_device() {
+	local line dev type
+	while IFS= read -r line; do
+		dev=${line%%:*}; type=${line#*:}
+		[[ $type == wifi ]] && { printf '%s' "$dev"; return 0; }
+	done < <(nmcli -t -f DEVICE,TYPE device status)
+	return 1
+}
+
+profile_exists() { # name
+	local line
+	while IFS= read -r line; do
+		[[ $(unescape "${line#*:}") == "$1" ]] && return 0
+	done < <(nmcli -t -m multiline -f NAME connection show)
+	return 1
+}
+
+build_wifi() { # device
+	local dev=$1 line key val inuse='' ssid='' signal='' sec=''
+	while IFS= read -r line; do
+		key=${line%%:*}
+		val=$(unescape "${line#*:}")
+		case $key in
+		IN-USE)  inuse=$val ;;
+		SSID)    ssid=$val ;;
+		SIGNAL)  signal=$val ;;
+		SECURITY)                       # last field: record is complete
+			sec=$val
+			[[ -z $ssid ]] && continue          # hidden network
+			[[ -n ${WIFI_SEC[$ssid]+x} ]] && continue  # dup: keep strongest
+			WIFI_SEC[$ssid]=$sec
+			if [[ $inuse == '*' ]]; then
+				add_entry "[*] $ssid  ($signal%, ${sec:-open})  — disconnect" \
+					wifi-disconnect "$dev"
+			else
+				add_entry "[ ] $ssid  ($signal%, ${sec:-open})" \
+					wifi-connect "$ssid"
+			fi
+			;;
+		esac
+	done < <(nmcli -t -m multiline -f IN-USE,SSID,SIGNAL,SECURITY \
+		device wifi list --rescan no)
+}
+
+build_connections() { # saved non-wifi profiles (vpn, wired, wireguard, ...)
+	local line key val name='' type='' state=''
+	while IFS= read -r line; do
+		key=${line%%:*}
+		val=$(unescape "${line#*:}")
+		case $key in
+		NAME)  name=$val ;;
+		TYPE)  type=$val ;;
+		STATE)                          # last field: record is complete
+			state=$val
+			[[ $type == *wireless* ]] && continue   # already in the wifi list
+			type=${type##*-}
+			if [[ $state == activated ]]; then
+				add_entry "[*] $name  ($type)  — disconnect" down "$name"
+			else
+				add_entry "[ ] $name  ($type)" up "$name"
+			fi
+			;;
+		esac
+	done < <(nmcli -t -m multiline -f NAME,TYPE,STATE connection show)
+}
+
+build_menu() {
+	local radio dev
+	radio=$(nmcli radio wifi 2>/dev/null)
+	if [[ $radio == enabled ]]; then
+		if dev=$(wifi_device); then
+			build_wifi "$dev"
+			add_entry "Rescan Wi-Fi" rescan
+		fi
+		add_entry "Turn Wi-Fi off" wifi-radio off
+	else
+		add_entry "Turn Wi-Fi on" wifi-radio on
+	fi
+	build_connections
+	add_entry "Edit connections…" editor
+}
+
+connect_wifi() { # ssid
+	local ssid=$1 pw
+	if profile_exists "$ssid"; then
+		run nmcli connection up id "$ssid"
+		return
+	fi
+	if [[ -z ${WIFI_SEC[$ssid]:-} ]]; then
+		run nmcli device wifi connect "$ssid"
+		return
+	fi
+	pw=$(: | "$WMENU" "${WMENU_PASS_ARGS[@]}" -p "password for $ssid") || exit 0
+	[[ -n $pw ]] || exit 0
+	# Password goes over stdin so it never appears in `ps`.
+	# If your nmcli refuses stdin, replace this with:
+	#   run nmcli device wifi connect "$ssid" password "$pw"
+	printf '%s\n' "$pw" | run nmcli --ask device wifi connect "$ssid"
+}
+
+dispatch() { # verb arg
+	case $1 in
+	up)              run nmcli connection up id "$2" ;;
+	down)            run nmcli connection down id "$2" ;;
+	wifi-connect)    connect_wifi "$2" ;;
+	wifi-disconnect) run nmcli device disconnect "$2" ;;
+	wifi-radio)      run nmcli radio wifi "$2" ;;
+	rescan)          nmcli device wifi rescan >/dev/null 2>&1; sleep 2; exec "$0" ;;
+	editor)          exec "${EDITOR_CMD[@]}" ;;
+	*)               notify "unknown action: $1"; return 1 ;;
+	esac
+}
+
+main() {
+	command -v nmcli  >/dev/null || { notify "nmcli not found"; exit 1; }
+	command -v "$WMENU" >/dev/null || { notify "$WMENU not found"; exit 1; }
+
+	build_menu
+	((${#MENU[@]})) || { notify "nothing to show"; exit 1; }
+
+	local choice entry
+	choice=$(printf '%s\n' "${MENU[@]}" | "$WMENU" "${WMENU_ARGS[@]}" -p "$PROMPT") || exit 0
+	[[ -n $choice ]] || exit 0     # cancelled
+	entry=${ACTION[$choice]:-}
+	[[ -n $entry ]] || exit 0      # empty or hand-typed input: do nothing
+
+	dispatch "${entry%%$'\t'*}" "${entry#*$'\t'}"
+}
+
+main "$@"
