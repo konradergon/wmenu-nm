@@ -110,7 +110,8 @@ build_connections() { # saved non-wifi profiles (vpn, wired, wireguard, ...)
 			name=$val ;;
 		TYPE)
 			type=$val ;;
-		STATE)		# last field: record is complete
+		# last field: record is complete
+		STATE)
 			state=$val
 			[[ $type == *wireless* ]] && continue # already in the wifi list
 			type=${type##*-}
