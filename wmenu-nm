@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wmenu-nm — network-manager interface driven by wmenu + nmcli.
+# wmenu-nm — nm-applet replacement driven by wmenu + nmcli.
 #
 # Requires: bash >= 4.2, NetworkManager (nmcli), wmenu
 # Optional: libnotify (notify-send), nm-connection-editor
