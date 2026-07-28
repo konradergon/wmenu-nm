@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# wmenu-nm — an nm-applet replacement driven by wmenu + nmcli.
+# wmenu-nm — network-manager interface driven by wmenu + nmcli.
 #
 # Requires: bash >= 4.2, NetworkManager (nmcli), wmenu
 # Optional: libnotify (notify-send), nm-connection-editor
 #
-# Bind it to a key, e.g. in sway:  bindsym $mod+n exec wmenu-net
+# Bind it to a key, e.g. in sway:  bindsym $mod+n exec wmenu-nm
 
 set -uo pipefail
 
 WMENU=${WMENU:-wmenu}
-WMENU_ARGS=(-i -l 15)        # -i case-insensitive, -l visible lines
-WMENU_PASS_ARGS=(-i -P)      # -P password mode (hides input)
+WMENU_ARGS=(-i -l 15)	# -i case-insensitive, -l visible lines
+WMENU_PASS_ARGS=(-i -P)	# -P password mode (hides input)
 EDITOR_CMD=(nm-connection-editor)
 PROMPT=${PROMPT:-network}
 
-# MENU:     ordered list of labels shown to the user
-# ACTION:   label -> "verb<TAB>arg"
+# MENU: ordered list of labels shown to the user
+# ACTION: label -> "verb<TAB>arg"
 # WIFI_SEC: ssid  -> security string ("" means open network)
 declare -a MENU=()
 declare -A ACTION=()
@@ -23,7 +23,7 @@ declare -A WIFI_SEC=()
 
 add_entry() { # label verb [arg]
 	local label=$1
-	[[ -n ${ACTION[$label]:-} ]] && return 0   # keep labels unique
+	[[ -n ${ACTION[$label]:-} ]] && return 0 # keep labels unique
 	MENU+=("$label")
 	ACTION[$label]=$2$'\t'${3-}
 }
@@ -75,13 +75,17 @@ build_wifi() { # device
 		key=${line%%:*}
 		val=$(unescape "${line#*:}")
 		case $key in
-		IN-USE)  inuse=$val ;;
-		SSID)    ssid=$val ;;
-		SIGNAL)  signal=$val ;;
-		SECURITY)                       # last field: record is complete
+		IN-USE)
+			inuse=$val ;;
+		SSID)
+			ssid=$val ;;
+		SIGNAL)
+			signal=$val ;;
+		# last field: record is complete
+		SECURITY)
 			sec=$val
-			[[ -z $ssid ]] && continue          # hidden network
-			[[ -n ${WIFI_SEC[$ssid]+x} ]] && continue  # dup: keep strongest
+			[[ -z $ssid ]] && continue # hidden network
+			[[ -n ${WIFI_SEC[$ssid]+x} ]] && continue # dup: keep strongest
 			WIFI_SEC[$ssid]=$sec
 			if [[ $inuse == '*' ]]; then
 				add_entry "[*] $ssid  ($signal%, ${sec:-open})  — disconnect" \
@@ -102,11 +106,13 @@ build_connections() { # saved non-wifi profiles (vpn, wired, wireguard, ...)
 		key=${line%%:*}
 		val=$(unescape "${line#*:}")
 		case $key in
-		NAME)  name=$val ;;
-		TYPE)  type=$val ;;
-		STATE)                          # last field: record is complete
+		NAME)
+			name=$val ;;
+		TYPE)
+			type=$val ;;
+		STATE)		# last field: record is complete
 			state=$val
-			[[ $type == *wireless* ]] && continue   # already in the wifi list
+			[[ $type == *wireless* ]] && continue # already in the wifi list
 			type=${type##*-}
 			if [[ $state == activated ]]; then
 				add_entry "[*] $name  ($type)  — disconnect" down "$name"
@@ -154,14 +160,22 @@ connect_wifi() { # ssid
 
 dispatch() { # verb arg
 	case $1 in
-	up)              run nmcli connection up id "$2" ;;
-	down)            run nmcli connection down id "$2" ;;
-	wifi-connect)    connect_wifi "$2" ;;
-	wifi-disconnect) run nmcli device disconnect "$2" ;;
-	wifi-radio)      run nmcli radio wifi "$2" ;;
-	rescan)          nmcli device wifi rescan >/dev/null 2>&1; sleep 2; exec "$0" ;;
-	editor)          exec "${EDITOR_CMD[@]}" ;;
-	*)               notify "unknown action: $1"; return 1 ;;
+	up)
+		run nmcli connection up id "$2" ;;
+	down)
+		run nmcli connection down id "$2" ;;
+	wifi-connect)
+		connect_wifi "$2" ;;
+	wifi-disconnect)
+		run nmcli device disconnect "$2" ;;
+	wifi-radio)
+		run nmcli radio wifi "$2" ;;
+	rescan)
+		nmcli device wifi rescan >/dev/null 2>&1; sleep 2; exec "$0" ;;
+	editor)
+		exec "${EDITOR_CMD[@]}" ;;
+	*)
+		notify "unknown action: $1"; return 1 ;;
 	esac
 }
 
@@ -174,9 +188,9 @@ main() {
 
 	local choice entry
 	choice=$(printf '%s\n' "${MENU[@]}" | "$WMENU" "${WMENU_ARGS[@]}" -p "$PROMPT") || exit 0
-	[[ -n $choice ]] || exit 0     # cancelled
+	[[ -n $choice ]] || exit 0 # cancelled
 	entry=${ACTION[$choice]:-}
-	[[ -n $entry ]] || exit 0      # empty or hand-typed input: do nothing
+	[[ -n $entry ]] || exit 0 # empty or hand-typed input: do nothing
 
 	dispatch "${entry%%$'\t'*}" "${entry#*$'\t'}"
 }
